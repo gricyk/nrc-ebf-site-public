@@ -49,8 +49,18 @@ const FIELDS = [
 
 const UPLOADS = [
     'logo'    => ['Логотип церкви', MAX_LOGO, ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif']],
-    'charter' => ['Конституция / устав церкви', MAX_CHARTER, ['application/pdf' => 'pdf', 'image/jpeg' => 'jpg', 'image/png' => 'png']],
+    'charter' => ['Конституция / устав церкви', MAX_CHARTER, [
+        'application/pdf' => 'pdf', 'image/jpeg' => 'jpg', 'image/png' => 'png',
+        'application/msword' => 'doc',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+        'application/vnd.oasis.opendocument.text' => 'odt',
+        'application/rtf' => 'rtf', 'text/rtf' => 'rtf', 'text/plain' => 'txt',
+    ]],
 ];
+
+// Word/ODT libmagic иногда определяет лишь как «zip» или «двоичный файл» — тогда решает расширение имени.
+const GENERIC_MIME = ['application/zip', 'application/octet-stream', 'application/x-ole-storage', 'application/CDFV2', 'application/vnd.ms-office'];
+const DOC_EXT      = ['doc', 'docx', 'odt', 'rtf'];
 
 $CLI     = PHP_SAPI === 'cli';
 $PRIVATE = dirname(__DIR__, 2) . '/private';          // …/vhosts/nrc-ebf.eu/private
@@ -288,11 +298,16 @@ foreach (UPLOADS as $key => [$label, $max, $types]) {
         continue;
     }
     $mime = $finfo->file($f['tmp_name']) ?: '';
-    if (!isset($types[$mime])) {
+    $ext  = $types[$mime] ?? null;
+    $orig = strtolower(pathinfo((string) ($f['name'] ?? ''), PATHINFO_EXTENSION));
+    if ($ext === null && $key === 'charter' && in_array($mime, GENERIC_MIME, true) && in_array($orig, DOC_EXT, true)) {
+        $ext = $orig;
+    }
+    if ($ext === null) {
         $errors[] = "файл «{$label}» неподходящего формата";
         continue;
     }
-    $uploads[$key] = [$f['tmp_name'], $types[$mime]];
+    $uploads[$key] = [$f['tmp_name'], $ext];
 }
 
 if ($errors) {
