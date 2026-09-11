@@ -6,7 +6,8 @@
  *   1. проверяет данные и файлы (логотип, устав), отсекает спам (скрытое поле, слишком быстрая отправка, лимит по IP);
  *   2. сохраняет заявку ВНЕ веб-корня: …/vhosts/nrc-ebf.eu/private/membership/<номер>/
  *      application.csv, application.pdf и загруженные файлы; строка добавляется и в общий applications.csv;
- *   3. отправляет письмо с CSV, PDF и файлами на info@nrc-ebf.eu (Reply-To — заявитель);
+ *   3. отправляет письмо на info@nrc-ebf.eu (Reply-To — заявитель): PDF и CSV во вложении, файлы — вложением,
+ *      если помещаются в лимит письма, и всегда — защищённой ссылкой на скачивание (membership-file.php);
  *   4. отправляет заявителю автоответ «Ваше заявление получено».
  *
  * Библиотеки (TCPDF, PHPMailer) ставятся composer'ом в …/private/membership-lib — см. deploy/README.md.
@@ -22,7 +23,12 @@ const MAIL_FROM_NAME = 'NRC-EBF';
 const FORM_URL       = '/new-church-nrc-ebf/';
 const THANKS_URL     = '/new-church-nrc-ebf/spasibo/';
 const MAX_LOGO       = 5 * 1024 * 1024;
-const MAX_CHARTER    = 10 * 1024 * 1024;
+const MAX_CHARTER    = 20 * 1024 * 1024;
+// postfix на сервере принимает письма до ~10 МБ, а вложения при отправке растут на треть (base64):
+// всё, что не помещается в этот запас, в письмо не прикладывается — только ссылкой.
+const ATTACH_BUDGET  = 6 * 1024 * 1024;
+const LINK_TTL       = 180 * 86400;   // ссылки на файлы в письме действуют 180 дней
+const SITE_HOSTS     = ['nrc-ebf.eu', 'www.nrc-ebf.eu', 'new.nrc-ebf.eu'];
 const RATE_LIMIT     = 5;      // заявлений
 const RATE_WINDOW    = 3600;   // за час с одного IP
 const MIN_FILL_MS    = 4000;   // быстрее 4 секунд форму заполняет только бот
@@ -152,6 +158,37 @@ function write_csv(string $path, array $header, array $row, bool $append): void
     fclose($fh);
 }
 
+// ---------------------------------------------------------------- ссылки на файлы
+
+/** Секрет для подписи ссылок: создаётся один раз, лежит вне веб-корня, в репозиторий не попадает. */
+function link_secret(): string
+{
+    global $PRIVATE;
+    $file = "$PRIVATE/membership-secret";
+    if (!is_file($file)) {
+        file_put_contents($file, bin2hex(random_bytes(32)), LOCK_EX);
+        chmod($file, 0600);
+    }
+    return trim((string) file_get_contents($file));
+}
+
+function file_link(string $id, string $name): string
+{
+    global $CLI;
+    $host = $CLI ? 'nrc-ebf.eu' : strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
+    if (!in_array($host, SITE_HOSTS, true)) {
+        $host = 'nrc-ebf.eu';
+    }
+    $exp = time() + LINK_TTL;
+    $sig = hash_hmac('sha256', "$id|$name|$exp", link_secret());
+    return "https://$host/api/membership-file.php?" . http_build_query(['id' => $id, 'f' => $name, 'e' => $exp, 's' => $sig]);
+}
+
+function human_size(int $bytes): string
+{
+    return $bytes >= 1048576 ? round($bytes / 1048576, 1) . ' МБ' : max(1, (int) round($bytes / 1024)) . ' КБ';
+}
+
 // ---------------------------------------------------------------- PDF
 
 function make_pdf(string $path, string $id, string $when, array $values, array $saved): void
@@ -190,7 +227,7 @@ function make_pdf(string $path, string $id, string $when, array $values, array $
     $html .= '<tr><td colspan="2" style="font-size:12pt;font-weight:bold;color:#1f4f9a;border-bottom:0.3mm solid #1f4f9a;">Файлы и согласия</td></tr>';
     foreach (UPLOADS as $key => [$label]) {
         $html .= '<tr><td width="34%" style="color:#4b5563;">' . $label . '</td><td width="66%">'
-            . (isset($saved[$key]) ? htmlspecialchars(basename($saved[$key])) . ' (во вложении)' : 'не приложен') . '</td></tr>';
+            . (isset($saved[$key]) ? htmlspecialchars(basename($saved[$key])) . ' (' . human_size((int) filesize($saved[$key])) . ')' : 'не приложен') . '</td></tr>';
     }
     $html .= '<tr><td width="34%" style="color:#4b5563;">Конституция NRC-EBF</td><td width="66%">Ознакомились, принимают и поддерживают Конституцию и Основы вероучения</td></tr>';
     $html .= '<tr><td width="34%" style="color:#4b5563;">Обработка данных</td><td width="66%">Согласие дано</td></tr>';
@@ -224,8 +261,10 @@ function cli_fixture(): array
         'accept_constitution' => '1', 'accept_privacy' => '1', 'started' => (string) ((time() - 60) * 1000),
     ];
     $files = [];
-    if ($logo = getenv('NRC_FORM_TEST_LOGO')) {
-        $files['logo'] = ['name' => basename($logo), 'tmp_name' => $logo, 'size' => filesize($logo), 'error' => UPLOAD_ERR_OK];
+    foreach (['logo' => 'NRC_FORM_TEST_LOGO', 'charter' => 'NRC_FORM_TEST_CHARTER'] as $key => $env) {
+        if ($path = getenv($env)) {
+            $files[$key] = ['name' => basename($path), 'tmp_name' => $path, 'size' => filesize($path), 'error' => UPLOAD_ERR_OK];
+        }
     }
     return [$post, $files];
 }
@@ -243,6 +282,10 @@ if ($CLI) {
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         header('Allow: POST');
         page(405, 'Форма заявления', '<p>Заявление подаётся через форму на сайте.</p><a class="btn" href="' . FORM_URL . '">Открыть форму</a>');
+    }
+    // запрос больше post_max_size PHP отбрасывает целиком — $_POST приходит пустым
+    if (empty($_POST) && (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+        fail('Файлы слишком большие. Устав — до 20 МБ, логотип — до 5 МБ.');
     }
     $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
 }
@@ -290,7 +333,7 @@ foreach (UPLOADS as $key => [$label, $max, $types]) {
         continue;
     }
     if ($f['error'] !== UPLOAD_ERR_OK) {
-        $errors[] = "файл «{$label}» не загрузился (возможно, слишком большой)";
+        $errors[] = "файл «{$label}» не загрузился (возможно, больше " . ($max >> 20) . ' МБ)';
         continue;
     }
     if ($f['size'] > $max) {
@@ -349,12 +392,35 @@ foreach (FIELDS as $key => [$label]) {
     $summary .= $label . ': ' . ($values[$key] !== '' ? $values[$key] : '—') . "\n";
 }
 
+// что прикладываем к письму: PDF и CSV всегда, файлы — пока помещаются в запас письма; ссылки — на всё
+$files = ['application.pdf' => 'Заявление (PDF)', 'application.csv' => 'Заявление (CSV)'];
+foreach ($saved as $key => $path) {
+    $files[basename($path)] = UPLOADS[$key][0];
+}
+$budget   = ATTACH_BUDGET;
+$attach   = [];
+$fileList = '';
+foreach ($files as $name => $label) {
+    $path = "$dir/$name";
+    if (!is_file($path)) {
+        continue;
+    }
+    $size = (int) filesize($path);
+    $fits = $size <= $budget;
+    if ($fits) {
+        $budget -= $size;
+        $attach[$name] = $path;
+    }
+    $fileList .= "- {$label}, " . human_size($size) . ($fits ? ' — во вложении' : ' — слишком велик для письма, скачать по ссылке') . "\n  " . file_link($id, $name) . "\n";
+}
+
 if ($CLI && getenv('NRC_FORM_TEST_MAIL') !== '1') {
-    echo "OK $id — файлы: " . implode(', ', array_map('basename', glob("$dir/*"))) . " (письма не отправлялись)\n";
+    echo "OK $id — файлы: " . implode(', ', array_map('basename', glob("$dir/*"))) . " (письма не отправлялись)\n"
+        . "во вложение пошли бы: " . implode(', ', array_keys($attach)) . "\n{$fileList}";
     exit(0);
 }
 
-// 1) координаторам — со всеми файлами
+// 1) координаторам
 try {
     $m = mailer();
     $m->setFrom(MAIL_FROM, 'Сайт NRC-EBF');
@@ -362,13 +428,11 @@ try {
     $m->addReplyTo($values['email'], $pastor);
     $m->Subject = "Заявление на членство: {$church} ({$values['city']}, {$values['country']})";
     $m->Body = "Новое заявление на членство в сети NRC-EBF\n№ {$id} от {$when}\n\n{$summary}\n"
-        . "Во вложении: заявление в PDF и CSV" . ($saved ? ', ' . implode(', ', array_map('basename', $saved)) : '') . ".\n"
-        . "Копия сохранена на сервере: private/membership/{$id}/\n"
+        . "Файлы заявления (ссылки действуют " . (LINK_TTL / 86400) . " дней):\n{$fileList}\n"
+        . "Копия хранится на сервере: private/membership/{$id}/\n"
         . "Ответить заявителю можно прямо на это письмо.\n";
-    $m->addAttachment("$dir/application.pdf", "zayavlenie-{$id}.pdf");
-    $m->addAttachment("$dir/application.csv", "zayavlenie-{$id}.csv");
-    foreach ($saved as $key => $path) {
-        $m->addAttachment($path, "{$key}-{$id}." . pathinfo($path, PATHINFO_EXTENSION));
+    foreach ($attach as $name => $path) {
+        $m->addAttachment($path, pathinfo($name, PATHINFO_FILENAME) . "-{$id}." . pathinfo($name, PATHINFO_EXTENSION));
     }
     $m->send();
 } catch (Throwable $e) {
