@@ -141,6 +141,7 @@
 
 
 &lt;div class="person"&gt;
+ &lt;img class="person__photo" src="https://nrc-ebf.eu/kontakt/chernov_hu_279bdf95d48b4999.webp" alt="" width="80" height="80" loading="lazy"&gt;
  &lt;div class="person__body"&gt;
  &lt;strong class="person__name"&gt;Сергей Чернов&lt;/strong&gt;
  &lt;span class="person__role"&gt;Член координационного совета по Европе&lt;/span&gt;
@@ -155,6 +156,7 @@
 
 
 &lt;div class="person"&gt;
+ &lt;img class="person__photo" src="https://nrc-ebf.eu/kontakt/neroda_hu_6283d0dbb38119d9.webp" alt="" width="80" height="80" loading="lazy"&gt;
  &lt;div class="person__body"&gt;
  &lt;strong class="person__name"&gt;Алексей Нерода&lt;/strong&gt;
  &lt;span class="person__role"&gt;Член координационного совета по Европе&lt;/span&gt;
@@ -169,6 +171,7 @@
 
 
 &lt;div class="person"&gt;
+ &lt;img class="person__photo" src="https://nrc-ebf.eu/kontakt/kostiuk_hu_130d901fb895a15c.webp" alt="" width="80" height="80" loading="lazy"&gt;
  &lt;div class="person__body"&gt;
  &lt;strong class="person__name"&gt;Александр Костюк&lt;/strong&gt;
  &lt;span class="person__role"&gt;Член координационного совета по Европе&lt;/span&gt;
